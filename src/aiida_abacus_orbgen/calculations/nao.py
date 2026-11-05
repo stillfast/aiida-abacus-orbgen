@@ -94,14 +94,26 @@ def orbgen_nao(nsw_orbital: SinglefileData, scf_outputs: dict, orbgen_config: Di
 
 
 def _copy_tree(folder, dest: str) -> None:
-    """Copy a retrieved ``OUT.ABACUS`` into the layout the fit expects."""
+    """Lay a retrieved folder out the way the spillage fit expects.
+
+    The ABACUS-AiiDA plugin stores the output directory under a *renamed* folder
+    (``OUT.aiida`` by default), so the contents have to be copied into ``OUT.ABACUS``
+    one by one -- copying the top level naively would hand the fit a directory entry
+    where it expects a file.
+    """
     target = os.path.join(dest, "OUT.ABACUS")
     os.makedirs(target, exist_ok=True)
-    for name in folder.list_object_names():
-        folder.get_object(name).copyfile(os.path.join(target, name))
-    # the fit also wants INPUT/STRU at the geometry level; the retrieved folder may
-    # carry them under OUT.ABACUS or at the top level depending on the plugin version
+
+    top = folder.list_object_names()
+    sub = next((n for n in ("OUT.aiida", "OUT.ABACUS") if n in top), None)
+    if sub is None:
+        raise ValueError(f"retrieved folder has no OUT.* directory (has {top})")
+
+    for name in folder.list_object_names(sub):
+        folder.get_object(f"{sub}/{name}").copyfile(os.path.join(target, name))
+
+    # the fit wants INPUT/STRU at the geometry level (they live inside OUT.* for ABACUS)
     for name in ("INPUT", "STRU"):
-        src = folder.get_object(name) if name in folder.list_object_names() else None
-        if src is not None:
-            src.copyfile(os.path.join(dest, name))
+        src = f"{sub}/{name}"
+        if name in folder.list_object_names(sub):
+            folder.get_object(src).copyfile(os.path.join(dest, name))

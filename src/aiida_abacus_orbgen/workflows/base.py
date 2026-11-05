@@ -61,6 +61,11 @@ class OrbgenBaseWorkChain(WorkChain):
         spec.input("abacus_code", valid_type=orm.InstalledCode)
         spec.input("scf_parameters", valid_type=orm.Dict)
         spec.input("kpoints", valid_type=orm.KpointsData, required=False)
+        spec.input("scf_settings", valid_type=orm.Dict, required=False,
+                   help="ABACUS `settings` Dict for the SCF.  The matrix files the "
+                        "spillage fit needs are merged in automatically -- the plugin's "
+                        "default retrieve list has only INPUT/kpoints/warning.log/running_scf.log "
+                        "and the AiiDA repository will otherwise be useless to orbgen.nao.")
         spec.input("clean_workdir", valid_type=orm.Bool, default=lambda: orm.Bool(False))
 
         spec.outline(
@@ -105,8 +110,25 @@ class OrbgenBaseWorkChain(WorkChain):
         if not orbital.is_stored:
             orbital.store()
 
-        element = self.inputs.siab_config.get_dict()["elem"]
+        cfg = self.inputs.siab_config.get_dict()
+        element = cfg.get("element") or cfg.get("elem")
         params = orm.Dict(dict={"input": self.inputs.scf_parameters.get_dict()})
+
+        settings = dict(self.inputs.scf_settings.get_dict()) \
+            if "scf_settings" in self.inputs else {}
+        gamma_only = bool(self.inputs.scf_parameters.get_dict().get("gamma_only", 0))
+        needed = ["data-0-H", "data-0-S", "data-0-T", "istate.info",
+                  "WFC_NAO_GAMMA1.txt" if gamma_only else "WFC_NAO_K1.txt"]
+        settings["additional_retrieve_list"] = sorted(
+            set(settings.get("additional_retrieve_list", [])) | set(needed))
+
+        expected = set(self.ctx.nsw_info.get_dict().get("dft_folders") or [])
+        given = set(self.inputs.structures.keys())
+        if expected and expected != given:
+            raise ValueError(
+                "the `structures` keys must be the SIAB reference-geometry folder names, "
+                f"otherwise the spillage fit cannot find them.\n  expected: {sorted(expected)}"
+                f"\n  given:    {sorted(given)}")
 
         running = {}
         for name, structure in self.inputs.structures.items():
@@ -115,6 +137,7 @@ class OrbgenBaseWorkChain(WorkChain):
                 "structure": structure,
                 "parameters": params,
                 "pseudos": {element: orbital},
+                "settings": orm.Dict(dict=settings),
                 "metadata": {"label": f"scf-{name}"},
             }
             if "kpoints" in self.inputs:

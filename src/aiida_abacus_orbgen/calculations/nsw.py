@@ -70,12 +70,30 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
     orbital = SinglefileData(file=path, filename=filename)
 
     nbf = _count_basis_functions(filename)
+
+    # The spillage fit locates each reference geometry by a folder name that SIAB
+    # derives from (element, prototype, bond length, r_cut).  Publish those names so the
+    # caller can key the SCF outputs with exactly them -- a mismatch here makes the fit
+    # silently skip geometries.
+    from aiida_orbgen.interfaces.stru import dft_folder_name
+
+    folders = []
+    for geom in cfg.get("geoms", []):
+        pertmags = geom.get("pertmags") or []
+        if not isinstance(pertmags, list):
+            pertmags = []
+        for pert in pertmags:
+            elem = cfg.get("element") or cfg.get("elem")
+            folders.append(dft_folder_name(elem, geom.get("proto", "dimer"),
+                                           pert, r_cut))
+
     info = {
         "filename": filename,
         "r_cut": r_cut,
         "ecutjy": ecutjy,
         "l_maxmax": l_max,
         "nbf_per_atom": nbf,
+        "dft_folders": folders,
         "workdir": workdir,                    # provenance only, scratch space
     }
     return {"nsw_orbital": orbital, "nsw_info": Dict(info)}
