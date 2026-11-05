@@ -48,8 +48,17 @@ _NOOP_ABACUS = "echo ORBGEN-NAO-SKIPPED-ABACUS"
 
 
 @calcfunction
-def orbgen_nao(nsw_orbital: SinglefileData, scf_outputs: dict, orbgen_config: Dict) -> dict:
-    """Run the spillage fit and return the contracted orbitals."""
+def orbgen_nao(nsw_orbital: SinglefileData, orbgen_config: Dict, folder_names: Dict,
+               **scf_outputs) -> dict:
+    """Run the spillage fit and return the contracted orbitals.
+
+    ``scf_outputs`` is a dynamic namespace rather than a plain dict: AiiDA serialises a
+    dict argument into a ``Dict`` node, which (a) cannot hold ``FolderData`` values and
+    (b) rejects the dots in names like ``U-dimer-2.10-12au``.  The namespace keys are
+    therefore the sanitised spellings and ``folder_names`` maps them back.
+    """
+    mapping = decode_config(folder_names.get_dict())
+    outputs = {mapping.get(key, key): node for key, node in scf_outputs.items()}
     cfg = json.loads(json.dumps(decode_config(orbgen_config.get_dict())))
     cfg["abacus_command"] = _NOOP_ABACUS
     # the fit reads the primitive from `primitive_jy/` next to the config
@@ -63,7 +72,7 @@ def orbgen_nao(nsw_orbital: SinglefileData, scf_outputs: dict, orbgen_config: Di
         handle.write(nsw_orbital.get_content(mode="rb"))
 
     # materialise one folder per geometry with its retrieved OUT.ABACUS
-    for folder, retrieved in scf_outputs.items():
+    for folder, retrieved in outputs.items():
         dest = os.path.join(workdir, folder)
         os.makedirs(dest, exist_ok=True)
         _copy_tree(retrieved, dest)
@@ -113,11 +122,16 @@ def _copy_tree(folder, dest: str) -> None:
     if sub is None:
         raise ValueError(f"retrieved folder has no OUT.* directory (has {top})")
 
+    def _extract(relpath: str, destino: str) -> None:
+        # FolderData.open() returns an Iterator[BinaryIO]; there is no copyfile() on the
+        # File objects (AttributeError: 'File' object has no attribute 'copyfile')
+        with folder.open(relpath, mode="rb") as src, open(destino, "wb") as dst:
+            dst.write(src.read())
+
     for name in folder.list_object_names(sub):
-        folder.get_object(f"{sub}/{name}").copyfile(os.path.join(target, name))
+        _extract(f"{sub}/{name}", os.path.join(target, name))
 
     # the fit wants INPUT/STRU at the geometry level (they live inside OUT.* for ABACUS)
     for name in ("INPUT", "STRU"):
-        src = f"{sub}/{name}"
         if name in folder.list_object_names(sub):
-            folder.get_object(src).copyfile(os.path.join(dest, name))
+            _extract(f"{sub}/{name}", os.path.join(dest, name))

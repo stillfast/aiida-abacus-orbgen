@@ -38,11 +38,14 @@ result : Dict                     parameter set, spillages, SCF energies
 """
 from __future__ import annotations
 
+import re
+
 from aiida import orm
 from aiida.engine import WorkChain, ToContext
 from aiida.plugins import CalculationFactory
 
 from ..calculations.nsw import orbgen_nsw
+from ..utils import encode_config
 from ..calculations.nao import orbgen_nao
 
 
@@ -135,9 +138,7 @@ class OrbgenBaseWorkChain(WorkChain):
         settings["additional_retrieve_list"] = sorted(
             set(settings.get("additional_retrieve_list", [])) | set(needed))
 
-        mapping = (self.inputs.folder_names.get_dict()
-                   if "folder_names" in self.inputs
-                   else {k: k for k in self.inputs.structures.keys()})
+        mapping = self._folder_mapping()
         expected = set(self.ctx.nsw_info.get_dict().get("dft_folders") or [])
         given = set(mapping.values())
         if expected and expected != given:
@@ -165,8 +166,20 @@ class OrbgenBaseWorkChain(WorkChain):
         return ToContext(**running)
 
     # ------------------------------------------------------------------ step 3
+    def _folder_mapping(self) -> dict:
+        """{namespace key: SIAB folder name}, recomputed wherever it is needed.
+
+        It has to be a method rather than a local variable: `run_scf` and `generate_nao`
+        are separate steps of the workchain, so a local computed in the first one is not
+        visible in the second (this bit with `NameError: name 'mapping' is not defined`).
+        """
+        if "folder_names" in self.inputs:
+            return self.inputs.folder_names.get_dict()
+        return {k: k for k in self.inputs.structures.keys()}
+
     def generate_nao(self):
         """Contract the primitive into the final NAO by minimising the spillage."""
+        mapping = self._folder_mapping()
         retrieved = {}
         for key, node in self.ctx.items():
             if not key.startswith("scf_"):
@@ -180,7 +193,15 @@ class OrbgenBaseWorkChain(WorkChain):
         if not retrieved:
             return self.exit_codes.ERROR_SCF_MISSING_OUTPUT.format(name="<none>")
 
-        out = orbgen_nao(self.ctx.nsw, retrieved, self.inputs.orbgen_config)
+        # keys must be valid link labels, so pass the sanitised spelling plus a map
+        sanitised = {}
+        inverse = {}
+        for folder, node in retrieved.items():
+            key = re.sub(r"[^0-9a-zA-Z_]", "_", folder)
+            sanitised[key] = node
+            inverse[key] = folder
+        out = orbgen_nao(self.ctx.nsw, self.inputs.orbgen_config,
+                         orm.Dict(dict=inverse), **sanitised)
         self.ctx.nao = out["nao_orbitals"]
         self.ctx.nao_info = out["nao_info"]
 
@@ -205,7 +226,9 @@ class OrbgenBaseWorkChain(WorkChain):
         }
 
         self.out("nsw_orbital", self.ctx.nsw)
-        self.out("result", orm.Dict(dict=result))
+        # geometry folder names ("U-dimer-2.10-12au") are dict keys here, and AiiDA Dict
+        # rejects dots in keys -- encode them, decode_config() reverses it
+        self.out("result", orm.Dict(dict=encode_config(result)))
         for name, node in self.ctx.nao.items():
             self.out(f"nao_orbitals.{name.replace('.', '_')}", node)
 
