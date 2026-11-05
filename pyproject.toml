@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiida-abacus-orbgen"
+version = "0.1.0"
+description = "AiiDA plugin: ABACUS numerical-orbital generation (NSW -> ABACUS -> NAO)"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+    "aiida-core>=2.0",
+    "aiida-abacus>=0.3",
+    "aiida-orbgen>=0.1",   # reused for the NSW (primitive) generation
+    "numpy",
+]
+
+[project.entry-points."aiida.calculations"]
+# The two generation steps.  They are `calcfunction`s, not CalcJobs: generating the
+# primitive basis and fitting the contracted orbitals are pure SIAB/Numpy operations,
+# there is no external executable to schedule.  The ABACUS SCF that sits between them
+# *is* a real CalcJob (`abacus.abacus` from aiida-abacus).
+"orbgen.nsw" = "aiida_abacus_orbgen.calculations.nsw:orbgen_nsw"
+"orbgen.nao" = "aiida_abacus_orbgen.calculations.nao:orbgen_nao"
+
+[project.entry-points."aiida.workflows"]
+"abacus.orbgen.base" = "aiida_abacus_orbgen.workflows.base:OrbgenBaseWorkChain"
+"abacus.orbgen.converge" = "aiida_abacus_orbgen.workflows.converge:OrbgenConvergeWorkChain"
+
+[tool.setuptools.packages.find]
+where = ["src"]
