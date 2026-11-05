@@ -26,6 +26,8 @@ import tempfile
 from aiida.engine import calcfunction
 from aiida.orm import Dict, SinglefileData
 
+from ..utils import decode_config
+
 
 @calcfunction
 def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
@@ -46,7 +48,7 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
     """
     from aiida_orbgen.interfaces.nsw import generate_nsw
 
-    cfg = siab_config.get_dict()
+    cfg = decode_config(siab_config.get_dict())
     s = settings.get_dict()
 
     r_cut = float(s["r_cut"])
@@ -75,7 +77,13 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
     # derives from (element, prototype, bond length, r_cut).  Publish those names so the
     # caller can key the SCF outputs with exactly them -- a mismatch here makes the fit
     # silently skip geometries.
+    from aiida_orbgen.interfaces.nsw import folder_rcut
     from aiida_orbgen.interfaces.stru import dft_folder_name
+
+    # SIAB renders r_cut with str(), so 12.0 becomes "12.0au"; its own pipeline
+    # normalises through folder_rcut() first and therefore writes "12au".  Match that or
+    # the fit will look for folders that do not exist.
+    canonical_rcut = folder_rcut(r_cut)
 
     folders = []
     for geom in cfg.get("geoms", []):
@@ -85,7 +93,7 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
         for pert in pertmags:
             elem = cfg.get("element") or cfg.get("elem")
             folders.append(dft_folder_name(elem, geom.get("proto", "dimer"),
-                                           pert, r_cut))
+                                           pert, canonical_rcut))
 
     info = {
         "filename": filename,

@@ -87,6 +87,9 @@ class OrbgenConvergeWorkChain(WorkChain):
         spec.input("scf_parameters", valid_type=orm.Dict)
         spec.input("kpoints", valid_type=orm.KpointsData, required=False)
         spec.input("clean_workdir", valid_type=orm.Bool, default=lambda: orm.Bool(False))
+        spec.input("scf_options", valid_type=orm.Dict, required=False,
+                   help="metadata.options for every CalcJob (carries the SLURM partition)")
+        spec.input("scf_settings", valid_type=orm.Dict, required=False)
 
         # ---- the grid
         spec.input("r_cuts", valid_type=orm.List, help="r_cut in a.u., e.g. [9,10,11,12]")
@@ -158,6 +161,8 @@ class OrbgenConvergeWorkChain(WorkChain):
             }
             if "kpoints" in self.inputs:
                 inputs["kpoints"] = self.inputs.kpoints
+            if "scf_options" in self.inputs:
+                inputs["metadata"]["options"] = self.inputs.scf_options.get_dict()
             running[f"pw_{name}"] = self.submit(AbacusCalculation, **inputs)
         self.report(f"submitted {len(running)} plane-wave reference SCF(s)")
         return ToContext(**running)
@@ -178,6 +183,10 @@ class OrbgenConvergeWorkChain(WorkChain):
             }
             if "kpoints" in self.inputs:
                 inputs["kpoints"] = self.inputs.kpoints
+            if "scf_options" in self.inputs:
+                inputs["scf_options"] = self.inputs.scf_options
+            if "scf_settings" in self.inputs:
+                inputs["scf_settings"] = self.inputs.scf_settings
             running[f"cand_{i:03d}"] = self.submit(OrbgenBaseWorkChain, **inputs)
         self.report(f"submitted {len(running)} OrbgenBaseWorkChain candidates")
         return ToContext(**running)

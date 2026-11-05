@@ -39,6 +39,8 @@ import tempfile
 from aiida.engine import calcfunction
 from aiida.orm import Dict, SinglefileData
 
+from ..utils import decode_config
+
 # Anything that looks like a real ABACUS launch is replaced by a no-op.  The fit only
 # reads the numbers from OUT.ABACUS; it must never trigger a calculation, and in
 # particular never on the daemon host.
@@ -48,7 +50,7 @@ _NOOP_ABACUS = "echo ORBGEN-NAO-SKIPPED-ABACUS"
 @calcfunction
 def orbgen_nao(nsw_orbital: SinglefileData, scf_outputs: dict, orbgen_config: Dict) -> dict:
     """Run the spillage fit and return the contracted orbitals."""
-    cfg = json.loads(json.dumps(orbgen_config.get_dict()))
+    cfg = json.loads(json.dumps(decode_config(orbgen_config.get_dict())))
     cfg["abacus_command"] = _NOOP_ABACUS
     # the fit reads the primitive from `primitive_jy/` next to the config
     cfg.setdefault("primitive_dir", "primitive_jy")
@@ -56,7 +58,9 @@ def orbgen_nao(nsw_orbital: SinglefileData, scf_outputs: dict, orbgen_config: Di
     workdir = tempfile.mkdtemp(prefix="orbgen_nao_")
     prim_dir = os.path.join(workdir, "primitive_jy")
     os.makedirs(prim_dir, exist_ok=True)
-    nsw_orbital.get_file().copyfile(os.path.join(prim_dir, nsw_orbital.filename))
+    # SinglefileData has no get_file() in AiiDA 2.x -- use get_content(mode="rb")
+    with open(os.path.join(prim_dir, nsw_orbital.filename), "wb") as handle:
+        handle.write(nsw_orbital.get_content(mode="rb"))
 
     # materialise one folder per geometry with its retrieved OUT.ABACUS
     for folder, retrieved in scf_outputs.items():

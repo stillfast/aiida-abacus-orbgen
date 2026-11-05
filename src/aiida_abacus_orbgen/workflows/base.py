@@ -57,10 +57,20 @@ class OrbgenBaseWorkChain(WorkChain):
         spec.input("settings", valid_type=orm.Dict)
         spec.input("orbgen_config", valid_type=orm.Dict)
         spec.input_namespace("structures", valid_type=orm.StructureData, dynamic=True)
+        spec.input("folder_names", valid_type=orm.Dict, required=False,
+                   help="{namespace_key: SIAB folder name}.  AiiDA link labels allow only "
+                        "alphanumerics and underscores, but SIAB names its reference "
+                        "geometries `U-dimer-2.10-12au`, so the two spellings have to be "
+                        "related explicitly.")
         spec.input("upf", valid_type=orm.UpfData)
         spec.input("abacus_code", valid_type=orm.InstalledCode)
         spec.input("scf_parameters", valid_type=orm.Dict)
         spec.input("kpoints", valid_type=orm.KpointsData, required=False)
+        spec.input("scf_options", valid_type=orm.Dict, required=False,
+                   help="metadata.options for the SCF CalcJobs (queue_name carries the "
+                        "SLURM partition; without it sbatch fails with 'No partition "
+                        "specified').  A WorkChain builder has no metadata.options of "
+                        "its own, so it has to be an explicit input.")
         spec.input("scf_settings", valid_type=orm.Dict, required=False,
                    help="ABACUS `settings` Dict for the SCF.  The matrix files the "
                         "spillage fit needs are merged in automatically -- the plugin's "
@@ -102,9 +112,12 @@ class OrbgenBaseWorkChain(WorkChain):
         from aiida_abacus.data.orbital import AtomicOrbitalData
 
         AbacusCalculation = CalculationFactory("abacus.abacus")
+        import io
+
         orbital = AtomicOrbitalData.get_or_create(
-            self.inputs.upf.get_file().filepath,
-            self.ctx.nsw.get_file().filepath,
+            io.BytesIO(self.inputs.upf.get_content(mode="rb")),
+            io.BytesIO(self.ctx.nsw.get_content(mode="rb")),
+            filename=self.inputs.upf.filename,
             filename_orbital=self.ctx.nsw.filename,
         )
         if not orbital.is_stored:
@@ -122,8 +135,11 @@ class OrbgenBaseWorkChain(WorkChain):
         settings["additional_retrieve_list"] = sorted(
             set(settings.get("additional_retrieve_list", [])) | set(needed))
 
+        mapping = (self.inputs.folder_names.get_dict()
+                   if "folder_names" in self.inputs
+                   else {k: k for k in self.inputs.structures.keys()})
         expected = set(self.ctx.nsw_info.get_dict().get("dft_folders") or [])
-        given = set(self.inputs.structures.keys())
+        given = set(mapping.values())
         if expected and expected != given:
             raise ValueError(
                 "the `structures` keys must be the SIAB reference-geometry folder names, "
@@ -140,6 +156,8 @@ class OrbgenBaseWorkChain(WorkChain):
                 "settings": orm.Dict(dict=settings),
                 "metadata": {"label": f"scf-{name}"},
             }
+            if "scf_options" in self.inputs:
+                inputs["metadata"]["options"] = self.inputs.scf_options.get_dict()
             if "kpoints" in self.inputs:
                 inputs["kpoints"] = self.inputs.kpoints
             running[f"scf_{name}"] = self.submit(AbacusCalculation, **inputs)
@@ -154,6 +172,7 @@ class OrbgenBaseWorkChain(WorkChain):
             if not key.startswith("scf_"):
                 continue
             name = key[len("scf_"):]
+            name = mapping.get(name, name)            # back to the SIAB folder name
             if "retrieved" not in node.outputs:
                 # a failed SCF is not something the fit can work around
                 return self.exit_codes.ERROR_SCF_MISSING_OUTPUT.format(name=name)
