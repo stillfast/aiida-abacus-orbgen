@@ -103,9 +103,11 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
 
         celldm = float(cfg["geoms"][0].get("celldm", 35.0))
         from aiida_orbgen.interfaces.stru import generate_atom_coords
-        # generate_all hands back the perturbation it used for this folder, so the
-        # geometry does not have to be reconstructed from the name
-        coords = generate_atom_coords(cfg["geoms"][0].get("proto", "dimer"),
+        # Use the prototype generate_all reports for *this* folder.  Taking
+        # geoms[0].proto instead makes the monomer a dimer: two U atoms land on top of
+        # each other and ABACUS dies with
+        #   "two atoms are too close! type:U atom 1 / atom 2, distance = 0 Bohr"
+        coords = generate_atom_coords(job.get("proto") or cfg["geoms"][0].get("proto", "dimer"),
                                       float(job.get("pert", 0.0)), celldm)
         structures[key] = structure_from_coords(coords, celldm * 0.529177210903)
         folders.append(folder)

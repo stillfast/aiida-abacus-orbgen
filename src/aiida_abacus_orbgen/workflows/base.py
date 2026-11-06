@@ -167,6 +167,11 @@ class OrbgenBaseWorkChain(WorkChain):
             "scf_energies": energies,
         }
         self.out("nsw_orbital", self.ctx.nsw)
-        self.out("result", orm.Dict(dict=encode_config(result)))
+        # a WorkChain cannot return an unstored Data node ("tried returning an unstored
+        # `Data` node ... use a calcfunction"), so the summary must be stored first
+        summary = orm.Dict(dict=encode_config(result))
+        summary.store()
+        self.out("result", summary)
         for name, node in self.ctx.nao.items():
-            self.out(f"nao_orbitals.{name.replace('.', '_')}", node)
+            # `name` is already a valid link label (orbgen.nao sanitises the keys)
+            self.out(f"nao_orbitals.{name}", node)

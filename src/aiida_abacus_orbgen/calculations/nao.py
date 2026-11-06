@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -91,18 +92,25 @@ def orbgen_nao(nsw_orbital: SinglefileData, orbgen_config: Dict, folder_names: D
         tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-30:])
         raise RuntimeError(f"orbgen fit failed (rc={proc.returncode}):\n{tail}")
 
-    orbitals, spillages = {}, []
+    orbitals, spillages, filenames = {}, [], {}
     for name in sorted(os.listdir(run_dir)):
         if not name.endswith(".orb"):
             continue
         node = SinglefileData(file=os.path.join(run_dir, name), filename=name)
-        orbitals[name] = node
+        # A calcfunction that returns a dict of nodes turns each key into an output
+        # link label, and those only allow alphanumerics and underscores -- a key of
+        # "U_gga_..._2s1p1d1f.orb" is rejected with
+        #   invalid link label `nao_orbitals__..._2s1p1d1f.orb`
+        key = re.sub(r"[^0-9a-zA-Z_]", "_", name)
+        orbitals[key] = node
+        filenames[key] = name
     with open(log_path) as handle:
         for line in handle:
             if "orbital optimization ends with spillage" in line:
                 spillages.append(float(line.rsplit("=", 1)[-1]))
 
-    info = {"orbitals": sorted(orbitals), "spillages": spillages}
+    info = {"orbitals": sorted(filenames.values()), "filenames": filenames,
+            "spillages": spillages}
     return {"nao_orbitals": orbitals, "nao_info": Dict(info)}
 
 
