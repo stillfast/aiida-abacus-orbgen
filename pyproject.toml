@@ -23,6 +23,8 @@ dependencies = [
 # *is* a real CalcJob (`abacus.abacus` from aiida-abacus).
 "orbgen.nsw" = "aiida_abacus_orbgen.calculations.nsw:orbgen_nsw"
 "orbgen.nao" = "aiida_abacus_orbgen.calculations.nao:orbgen_nao"
+# band-structure error between an LCAO run and its PW reference (paper eqs 12-13)
+"orbgen.eta" = "aiida_abacus_orbgen.calculations.eta:orbgen_eta"
 
 [project.entry-points."aiida.workflows"]
 "abacus.orbgen.base" = "aiida_abacus_orbgen.workflows.base:OrbgenBaseWorkChain"
