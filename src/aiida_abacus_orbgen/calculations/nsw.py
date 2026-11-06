@@ -1,52 +1,76 @@
-"""``orbgen.nsw`` -- generate the NSW (numerical spherical wave) primitive basis.
+"""``orbgen.nsw`` -- let SIAB generate the primitive basis **and** the ABACUS input deck.
 
-The primitive basis is fully determined by the pseudopotential plus three numbers:
+The whole point of this step is that nothing here re-derives what SIAB already knows.
+``generate_all`` writes, for one ``(r_cut, ecutjy, l_max)``:
 
-    (r_cut [a.u.], ecutjy [Ry], l_max)
+    {out}/primitive_jy/{elem}_{xc}_{r_cut}au_{ecutjy}Ry_{nzeta}.orb   the NSW basis
+    {out}/{dft_folder}/INPUT                                        SIAB's parameters
+    {out}/{dft_folder}/STRU                                         SIAB's geometry
 
-It is produced by truncated spherical Bessel functions, one set per angular momentum,
-whose count per ``l`` follows from ``ecutjy`` and ``r_cut``.  That is a pure Python /
-Numpy operation (no ABACUS run), so this step is a ``calcfunction`` and its output is
-cached by AiiDA whenever the same triple is requested again -- which matters a lot for
-``abacus.orbgen.converge``, where many grid points share the same primitive.
+and this calculation ships all three into the AiiDA graph:
 
-Outputs
--------
-nsw_orbital : SinglefileData
-    ``{elem}_{xc}_{r_cut}au_{ecutjy}Ry_{nzeta}.orb`` -- the primitive basis.
-nsw_info : Dict
-    ``{filename, r_cut, ecutjy, l_maxmax, nzeta, nbf_per_atom, nbes_per_l}``.
+    nsw_orbital  SinglefileData                the primitive basis
+    dft_inputs   namespace of SinglefileData   SIAB's INPUT, one per reference geometry
+    structures   namespace of StructureData    SIAB's STRU, parsed back
+    nsw_info     Dict                          folder names, nzeta, nbf/atom
+
+Why bother taking SIAB's INPUT verbatim: hand-writing the parameters (the previous
+version of this plugin did) silently drops things SIAB sets -- ``bessel_nao_rcut``,
+and the per-geometry ``nbands`` (the monomer needs
+``__iop_spill_guess_atomic_nbands__`` while the dimers use ``geoms[0].nbands``).  Those
+mismatches only show up much later, inside the spillage fit.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 
 from aiida.engine import calcfunction
-from aiida.orm import Dict, SinglefileData
+from aiida.orm import Dict, SinglefileData, StructureData
 
 from ..utils import decode_config
+
+#: keys the AiiDA plugin writes itself; keeping them would fight the plugin
+AIIIDA_MANAGED = {"suffix", "pseudo_dir", "orbital_dir", "stru_file", "kpoint_file",
+                  "wannier_card"}
+
+
+def parse_input_text(text: str) -> dict:
+    """ABACUS ``INPUT`` -> dict, exactly as written (values keep their spelling)."""
+    out = {}
+    for raw in text.splitlines():
+        line = raw.split("//")[0].split("#")[0].strip()
+        if not line or line.upper().startswith("INPUT_PARAMETERS"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        key, value = parts[0], parts[1].strip()
+        try:
+            value = int(value)
+        except ValueError:
+            try:
+                value = float(value)
+            except ValueError:
+                pass
+        out[key] = value
+    return out
+
+
+def structure_from_coords(coords, cell_a: float) -> StructureData:
+    """SIAB writes ``Cartesian_angstrom_center_xyz`` in a cubic cell of side ``cell_a``."""
+    stru = StructureData(cell=[[cell_a, 0.0, 0.0], [0.0, cell_a, 0.0], [0.0, 0.0, cell_a]])
+    for xyz in coords:
+        stru.append_atom(symbols="U", position=tuple(xyz))
+    return stru
 
 
 @calcfunction
 def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
-    """Generate the NSW primitive orbital for one ``(r_cut, ecutjy, l_max)``.
-
-    Parameters
-    ----------
-    siab_config
-        The SIAB/orbgen configuration dict (element, pseudopotential, ``ecutjy``,
-        ``ecutwfc``, ``geoms``, ...).  Overrides from ``settings`` are applied on top.
-    settings
-        ``r_cut``, ``ecutjy``, ``l_max``, ``dr`` (optional), ``xc`` (optional).
-        This is the part ``abacus.orbgen.converge`` scans.
-
-    Returns
-    -------
-    dict with keys ``nsw_orbital`` (SinglefileData) and ``nsw_info`` (Dict).
-    """
-    from aiida_orbgen.interfaces.nsw import generate_nsw
+    """Generate the NSW primitive basis plus the ABACUS input deck, via SIAB."""
+    from aiida_orbgen.interfaces.pipeline import generate_all
 
     cfg = decode_config(siab_config.get_dict())
     s = settings.get_dict()
@@ -56,69 +80,54 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
     l_max = int(s["l_max"])
     dr = float(s.get("dr", 0.01))
 
-    # the primitive carries r_cut / ecutjy inside its name, so override them in the
-    # SIAB config rather than only in the filename
-    cfg = json.loads(json.dumps(cfg))          # deep copy, keep the node immutable
-    cfg["bessel_nao_rcut"] = [r_cut]
+    cfg = json.loads(json.dumps(cfg))                 # deep copy, keep the node immutable
+    cfg["bessel_nao_rcut"] = [int(r_cut) if float(r_cut).is_integer() else r_cut]
     cfg["ecutjy"] = ecutjy
-    if "geoms" in cfg and cfg["geoms"]:
+    if cfg.get("geoms"):
         cfg["geoms"][0]["lmaxmax"] = l_max
 
     workdir = tempfile.mkdtemp(prefix="orbgen_nsw_")
-    out_dir = os.path.join(workdir, "primitive_jy")
-    path = generate_nsw(cfg, output_dir=out_dir, lmaxmax=l_max, dr=dr)
+    result = generate_all(cfg, output_root=workdir, lmaxmax=l_max, dr=dr)
 
-    filename = os.path.basename(path)
-    orbital = SinglefileData(file=path, filename=filename)
+    orbital = SinglefileData(file=result["nsw"], filename=os.path.basename(result["nsw"]))
 
-    nbf = _count_basis_functions(filename)
+    dft_inputs, structures, folders, params = {}, {}, [], {}
+    for i, job in enumerate(result["dft"]):
+        folder = os.path.basename(job["folder"])
+        key = re.sub(r"[^0-9a-zA-Z_]", "_", folder)     # valid AiiDA link label
+        with open(job["input"]) as handle:
+            text = handle.read()
+        dft_inputs[key] = SinglefileData(file=job["input"], filename="INPUT")
+        parsed = parse_input_text(text)
+        params[folder] = {k: v for k, v in parsed.items() if k not in AIIIDA_MANAGED}
 
-    # The spillage fit locates each reference geometry by a folder name that SIAB
-    # derives from (element, prototype, bond length, r_cut).  Publish those names so the
-    # caller can key the SCF outputs with exactly them -- a mismatch here makes the fit
-    # silently skip geometries.
-    from aiida_orbgen.interfaces.nsw import folder_rcut
-    from aiida_orbgen.interfaces.stru import dft_folder_name
-
-    # SIAB renders r_cut with str(), so 12.0 becomes "12.0au"; its own pipeline
-    # normalises through folder_rcut() first and therefore writes "12au".  Match that or
-    # the fit will look for folders that do not exist.
-    canonical_rcut = folder_rcut(r_cut)
-
-    elem = cfg.get("element") or cfg.get("elem")
-    folders = []
-    for geom in cfg.get("geoms", []):
-        pertmags = geom.get("pertmags") or []
-        if not isinstance(pertmags, list):
-            pertmags = []
-        for pert in pertmags:
-            folders.append(dft_folder_name(elem, geom.get("proto", "dimer"),
-                                           pert, canonical_rcut))
-
-    # `spill_guess: atomic` initialises the high-l channels from the *monomer* SCF, so
-    # that reference must be run as well; SIAB looks for it at `U-monomer-<rcut>au`.
-    if str(cfg.get("spill_guess", "")).lower() == "atomic":
-        folders.append(dft_folder_name(elem, "monomer", 0, canonical_rcut))
+        celldm = float(cfg["geoms"][0].get("celldm", 35.0))
+        from aiida_orbgen.interfaces.stru import generate_atom_coords
+        # generate_all hands back the perturbation it used for this folder, so the
+        # geometry does not have to be reconstructed from the name
+        coords = generate_atom_coords(cfg["geoms"][0].get("proto", "dimer"),
+                                      float(job.get("pert", 0.0)), celldm)
+        structures[key] = structure_from_coords(coords, celldm * 0.529177210903)
+        folders.append(folder)
 
     info = {
-        "filename": filename,
+        "element": cfg.get("element") or cfg.get("elem"),
+        "filename": orbital.filename,
         "r_cut": r_cut,
         "ecutjy": ecutjy,
         "l_maxmax": l_max,
-        "nbf_per_atom": nbf,
+        "nbf_per_atom": _count_basis_functions(orbital.filename),
         "dft_folders": folders,
-        "workdir": workdir,                    # provenance only, scratch space
+        "folder_map": {re.sub(r"[^0-9a-zA-Z_]", "_", f): f for f in folders},
+        "parameters": params,          # what SIAB says each SCF should use
+        "workdir": workdir,            # provenance only
     }
-    return {"nsw_orbital": orbital, "nsw_info": Dict(info)}
+    return {"nsw_orbital": orbital, "dft_inputs": dft_inputs,
+            "structures": structures, "nsw_info": Dict(info)}
 
 
 def _count_basis_functions(filename: str) -> int:
-    """``U_gga_12au_125Ry_41s41p40d40f39g.orb`` -> 995.
-
-    Reads the ``nX`` groups out of the name, so it does not need to parse the file.
-    """
-    import re
-
+    """``U_gga_12au_125Ry_41s41p40d40f39g.orb`` -> 995."""
     core = filename.rsplit(".", 1)[0]
     groups = re.findall(r"(\d+)([spdfgh])", core)
     return sum(int(n) * (2 * "spdfgh".index(l) + 1) for n, l in groups)
