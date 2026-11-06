@@ -85,15 +85,20 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
     # the fit will look for folders that do not exist.
     canonical_rcut = folder_rcut(r_cut)
 
+    elem = cfg.get("element") or cfg.get("elem")
     folders = []
     for geom in cfg.get("geoms", []):
         pertmags = geom.get("pertmags") or []
         if not isinstance(pertmags, list):
             pertmags = []
         for pert in pertmags:
-            elem = cfg.get("element") or cfg.get("elem")
             folders.append(dft_folder_name(elem, geom.get("proto", "dimer"),
                                            pert, canonical_rcut))
+
+    # `spill_guess: atomic` initialises the high-l channels from the *monomer* SCF, so
+    # that reference must be run as well; SIAB looks for it at `U-monomer-<rcut>au`.
+    if str(cfg.get("spill_guess", "")).lower() == "atomic":
+        folders.append(dft_folder_name(elem, "monomer", 0, canonical_rcut))
 
     info = {
         "filename": filename,
