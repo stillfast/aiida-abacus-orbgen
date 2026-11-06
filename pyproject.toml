@@ -27,6 +27,8 @@ dependencies = [
 [project.entry-points."aiida.workflows"]
 "abacus.orbgen.base" = "aiida_abacus_orbgen.workflows.base:OrbgenBaseWorkChain"
 "abacus.orbgen.converge" = "aiida_abacus_orbgen.workflows.converge:OrbgenConvergeWorkChain"
+# Step 3: does the resulting NAO reproduce V0 / B0 ?
+"abacus.orbgen.eos" = "aiida_abacus_orbgen.workflows.eos:OrbgenEosWorkChain"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -74,6 +74,7 @@ class OrbgenBaseWorkChain(WorkChain):
         self.ctx.dft_inputs = out["dft_inputs"]
         self.ctx.structures = out["structures"]
         self.ctx.nsw_info = out["nsw_info"]
+        self.ctx.effective_config = out["effective_config"]
         info = self.ctx.nsw_info.get_dict()
         self.report(f"NSW basis {info['filename']} ({info['nbf_per_atom']} functions/atom), "
                     f"{len(info['dft_folders'])} reference geometries from SIAB")
@@ -140,7 +141,8 @@ class OrbgenBaseWorkChain(WorkChain):
         if not retrieved:
             return self.exit_codes.ERROR_SCF_MISSING_OUTPUT.format(name="<none>")
 
-        out = orbgen_nao(self.ctx.nsw, self.inputs.orbgen_config,
+        # the *effective* config (r_cut / ecutjy applied), not the input file
+        out = orbgen_nao(self.ctx.nsw, self.ctx.effective_config,
                          orm.Dict(dict=inverse), **retrieved)
         self.ctx.nao = out["nao_orbitals"]
         self.ctx.nao_info = out["nao_info"]

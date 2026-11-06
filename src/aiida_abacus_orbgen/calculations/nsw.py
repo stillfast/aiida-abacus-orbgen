@@ -124,8 +124,14 @@ def orbgen_nsw(siab_config: Dict, settings: Dict) -> dict:
         "parameters": params,          # what SIAB says each SCF should use
         "workdir": workdir,            # provenance only
     }
+    # The fit must see the SAME config: it derives the reference-geometry folder names
+    # from `bessel_nao_rcut` / `ecutjy`, so passing the original file (12 au, 125 Ry) to
+    # orbgen_nao makes it look for `U-dimer-2.10-12au` while the SCFs ran in
+    # `U-dimer-2.10-9au` -> FileNotFoundError on istate.info.
+    from ..utils import encode_config as _encode
     return {"nsw_orbital": orbital, "dft_inputs": dft_inputs,
-            "structures": structures, "nsw_info": Dict(info)}
+            "structures": structures, "nsw_info": Dict(info),
+            "effective_config": Dict(dict=_encode(cfg))}
 
 
 def _count_basis_functions(filename: str) -> int:
