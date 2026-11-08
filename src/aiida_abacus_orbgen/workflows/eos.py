@@ -61,13 +61,36 @@ class OrbgenEosWorkChain(WorkChain):
                    default=lambda: orm.Float(0.25))
         spec.input("scales", valid_type=orm.List,
                    help="linear volume scale factors, e.g. [0.98,0.99,1.0,1.01,1.02]")
-        spec.input("scf_options", valid_type=orm.Dict, required=False)
+        # Required, not optional: without it the CalcJobs go out with
+        # queue_name=None and 1 MPI rank, sbatch fails with "No partition specified",
+        # and AiiDA only discovers it after five failed submission attempts -- leaving
+        # the workchain stuck in Pausing.  Failing at build time is much cheaper.
+        spec.input("scf_options", valid_type=orm.Dict, required=True,
+                   validator=cls._validate_scf_options)
+        spec.input("scf_settings", valid_type=orm.Dict, required=False,
+                   help="ABACUS `settings` Dict.  Always forwarded, even when empty: an "
+                        "absent `settings` port and an empty Dict hash differently, so "
+                        "omitting it silently prevents any cache hit against a campaign "
+                        "that supplied settings={}.")
 
         spec.outline(cls.run_scan, cls.fit)
 
         spec.output("eos", valid_type=orm.Dict)
         spec.exit_code(330, "ERROR_MISSING_POINTS",
                        message="fewer than four volume points produced an energy")
+
+    @staticmethod
+    def _validate_scf_options(value, _port=None):
+        """Reject a scheduling Dict that cannot produce a runnable sbatch script."""
+        data = value.get_dict() if hasattr(value, "get_dict") else dict(value)
+        if not data.get("queue_name"):
+            raise ValueError("scf_options needs 'queue_name' (the SLURM partition); "
+                             "without it sbatch fails with 'No partition specified' and "
+                             "the job only surfaces as five failed submissions")
+        resources = data.get("resources") or {}
+        if resources.get("tot_num_mpiprocs", resources.get("num_mpiprocs_per_machine", 1)) < 2:
+            raise ValueError("scf_options needs more than one MPI rank "
+                             f"(got {resources!r}); an ABACUS run on 1 rank is not useful")
 
     # ------------------------------------------------------------------ step 1
     def run_scan(self):
@@ -90,7 +113,11 @@ class OrbgenEosWorkChain(WorkChain):
         cell = np.array(base.cell)
 
         kpoints = orm.KpointsData()
-        kpoints.set_kpoints_mesh_from_diameter(self.inputs.kpoints_distance.value)
+        # AiiDA 2.x spells it `set_kpoints_mesh_from_density`, the argument is a k-point
+        # distance in 1/Angstrom, and it refuses to run unless the cell is set first
+        # ("Cannot define a mesh from a density without having defined a cell").
+        kpoints.set_cell(base.cell)
+        kpoints.set_kpoints_mesh_from_density(self.inputs.kpoints_distance.value)
 
         running = {}
         for scale in self.inputs.scales.get_list():
@@ -105,6 +132,9 @@ class OrbgenEosWorkChain(WorkChain):
                 "parameters": self.inputs.scf_parameters,
                 "pseudos": {element: orbital},
                 "kpoints": kpoints,
+                # always present, even empty -- see the note on the input port
+                "settings": orm.Dict(dict=(self.inputs.scf_settings.get_dict()
+                                           if "scf_settings" in self.inputs else {})),
                 "metadata": {"label": f"eos-scale-{scale:.4f}"},
             }
             if "scf_options" in self.inputs:
