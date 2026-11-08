@@ -182,6 +182,10 @@ class OrbgenEosWorkChain(WorkChain):
                "rms_meV": fitted["rms_meV"], "npoints": fitted["npoints"],
                "scales": self.inputs.scales.get_list(), "energies": points,
                "orbital": self.inputs.orbital.filename}
-        self.out("eos", orm.Dict(dict=out))
+        # a WorkChain cannot return an unstored Data node; storing first is the price of
+        # returning a summary from the workflow itself
+        summary = orm.Dict(dict=out)
+        summary.store()
+        self.out("eos", summary)
         self.report(f"V0/atom = {out['V0_per_atom']:.4f} A^3, B0 = {out['B0_GPa']:.1f} GPa, "
                     f"B0' = {out['BP']:.2f} (rms {out['rms_meV']:.2f} meV)")
